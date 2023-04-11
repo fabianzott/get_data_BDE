@@ -1,0 +1,677 @@
+#!/usr/bin/env python
+
+##################################################################################################################################################
+#                                                                                                                                                #
+#                This script unifies all relevant data (_gas_opt_freq.log, _SP_SMD_freq.log) from Gaussian 09 and 16 output files as well as     #
+#                       from ORCA output files (_TZ.out, _QZ.ut) in a single .csv file to obtain energies at the                                 #
+#                               SMD(H2O)/DLPNO-CCSD(T)/CBS//(U)B3LYP-D3/6-31+G(d,p) level of theory                                              #
+#                               The Gaussian output files in folder should be _SMD_opt.log or _SMD_opt_freq.log!                                 #
+#               The Dataframe "all_xyz" contains all geometries of all .log files in the folder for geometric analysis!                          #
+#                                       Automatic copying of relevant files automated! DeltaXYZ included! CBS added!                             #
+#                          DeltaXYZ is a value for gemoetric centroid analysis. Low value = same structure                                       #
+#                          Goodvibes_output.dat from https://github.com/patonlab/GoodVibes (-> adjust to newer verions!)                         #
+#                                                       For BDE calculations.                                                                    #
+#                                         Autocopy not tested! Goodvibes.dat only with _gv.log!                                                  #
+#                                                                                                                                                #
+#                                                                                                                                                #
+#                                                       Version: 1.07 (31.03.24)                                                                 #
+#                                               To Do:                                                                                           #
+#                                                                                                                                                #
+##################################################################################################################################################
+
+
+import pandas as pd
+import os
+import glob
+import sys
+import re
+import fileinput
+import shutil           # for copying files
+import pathlib
+import math
+
+pd.options.display.float_format = '{:10.6f}'.format
+
+
+
+elemDict = {"1" : "H", "2" : "He", "3" : "Li", "4" : "Be", "5" : "B", \
+"6"  : "C", "7"  : "N", "8"  : "O",  "9" : "F", "10" : "Ne", \
+"11" : "Na" , "12" : "Mg" , "13" : "Al" , "14" : "Si" , "15" : "P", \
+"16" : "S"  , "17" : "Cl" , "18" : "Ar" , "19" : "K"  , "20" : "Ca", \
+"21" : "Sc" , "22" : "Ti" , "23" : "V"  , "24" : "Cr" , "25" : "Mn", \
+"26" : "Fe" , "27" : "Co" , "28" : "Ni" , "29" : "Cu" , "30" : "Zn", \
+"31" : "Ga" , "32" : "Ge" , "33" : "As" , "34" : "Se" , "35" : "Br", \
+"36" : "Kr" , "37" : "Rb" , "38" : "Sr" , "39" : "Y"  , "40" : "Zr", \
+"41" : "Nb" , "42" : "Mo" , "43" : "Tc" , "44" : "Ru" , "45" : "Rh", \
+"46" : "Pd" , "47" : "Ag" , "48" : "Cd" , "49" : "In" , "50" : "Sn", \
+"51" : "Sb" , "52" : "Te" , "53" : "I"  , "54" : "Xe" , "55" : "Cs", \
+"56" : "Ba" , "57" : "La" , "58" : "Ce" , "59" : "Pr" , "60" : "Nd", \
+"61" : "Pm" , "62" : "Sm" , "63" : "Eu" , "64" : "Gd" , "65" : "Tb", \
+"66" : "Dy" , "67" : "Ho" , "68" : "Er" , "69" : "Tm" , "70" : "Yb", \
+"71" : "Lu" , "72" : "Hf" , "73" : "Ta" , "74" : "W"  , "75" : "Re", \
+"76" : "Os" , "77" : "Ir" , "78" : "Pt" , "79" : "Au" , "80" : "Hg", \
+"81" : "Tl" , "82" : "Pb" , "83" : "Bi" , "84" : "Po" , "85" : "At", \
+"86" : "Rn" , "87" : "Fr" , "88" : "Ra" , "89" : "Ac" , "90" : "Th", \
+"91" : "Pa" , "92" : "U"  , "93" : "Np" , "94" : "Pu" , "95" : "Am", \
+"96" : "Cm" , "97" : "Bk" , "98" : "Cf" , "99" : "Es" ,"100" : "Fm", \
+"101": "Md" ,"102" : "No" ,"103" : "Lr" ,"104" : "Rf" ,"105" : "Db", \
+"106": "Sg" ,"107" : "Bh" ,"108" : "Hs" ,"109" : "Mt" ,"110" : "Ds", \
+"111": "Rg" ,"112" : "Uub","113" : "Uut","114" : "Uuq","115" : "Uup", \
+"116": "Uuh","117" : "Uus","118" : "Uuo"}
+
+##############################Some Varibles#####################################################################################################
+
+criteria = float(0.026255)               # kJ/mol
+criteria_hartree = float(0.00001)        # energy criteria in Hartree 0.0000099999992
+hartconv = float(2625.498)               # conversion factor of [Hartree] to [kJ/mol]
+R = float(0.008314511)                   # gas constant as [kJ/K*mol]
+temp = float(289.15)                     # standard condition temperature
+kcalvonv = float(4184)                   # conversion factor [kcal] to [kJ/mol]
+
+
+def getCoordinates(file) :
+
+        f = open(file)                              # Open file on read mode
+        dataList = f.read().split("\n")             # Create a list containing all lines
+        f.close()
+
+
+        listofstart = []				# a list of indices of 'Standard orientation' in dataList
+        listofstop = []					# a list of indices of '--------------------' in dataList
+        for index, value in enumerate(dataList):
+            if 'Standard orientation' in value:
+                #print(index, value)
+                index = int(index)
+                listofstart.append(index)
+            if '----------' in value:
+                index = int(index)
+                listofstop.append(index)
+        start = max(listofstart) + 5			# last occurence of 'Standard orientation' and  xyz starts 5 lines after 'Standard orientation'
+        stoptop = start - 1				# get position of  "------" at top
+        indexStoptop = listofstop.index(stoptop)	# get the index in dataList of "------" at top
+        indexStopbottom = indexStoptop + 1		# get the index in dataList of "------" at bottom
+        end = listofstop[indexStopbottom]		# get index of position of "------" at bottom
+        xyzlist = dataList[start:end]			# extract last coordinates as list from dataList
+        list = pd.Series(xyzlist)				# convert to df
+        xyz = list.str.split(expand=True)		# split strings by whitespace and expand as new columns
+        xyz.columns = ['Center Number', 'Atomic Number', 'Atomic Type', 'X', 'Y', 'Z']
+        atomlist = []
+        for i in range(0, xyz.shape[0]):
+              value = xyz.iloc[i]['Atomic Number']
+              atom = str(elemDict.get(str(value)))	# convert 'Atomic Number' to 'Element'
+              atomlist.append(atom)			# apend elements to list
+        xyz['Element'] = atomlist			# new column on xyz
+        xyz = xyz[['Center Number', 'Element', 'X', 'Y', 'Z']]		# reshape dataframe
+        xyz = xyz.astype({"X": float, "Y": float, "Z": float})		# convert  X Y Z to float for later math. operations
+
+
+        return xyz
+
+
+#def DataFrameAllXYZ(file) :
+#
+#
+#
+#        return xyz
+
+
+
+def getElectronicEnergies(file) :		# input argument file in a loop
+
+
+        f = open(file)					# Open file on read mode
+        dataList = f.read().split("\n")			# Create a list containing all lines
+        f.close()
+        list_of_SCF_energies = []			# datalist of all indices of lines containing 'SCF Done'
+        for index, value in enumerate(dataList):	# fill datalist
+            if 'SCF Done:' in value:
+                #print(index, value)
+                index = int(index)
+                list_of_SCF_energies.append(index)
+                #print(list_of_SCF_energies)
+        last_energy_index = max(list_of_SCF_energies)	# get last 'SCF Done' as highest number in datalist
+        #print(last_energy_index)
+        line_to_split = dataList[last_energy_index]	# get said line
+        #print(line_to_split)
+        E_tot  = line_to_split.split()[4]	# get energy value by splitting line by whitespace and returning 4th value
+        #print(E_tot_B3LYP_SMD)
+
+
+        return E_tot
+
+
+def getSinglePointEnergyFromORCA(file) :
+
+        f = open(file)                                  # Open file on read mode
+        dataList = f.read().split("\n")                 # Create a list containing all lines
+        f.close()
+        #print(dataList)
+        for index, value in enumerate(dataList):        # fill datalist
+            if 'FINAL SINGLE POINT ENERGY' in value:
+                #print(index, value)
+                index = int(index)
+                E_tot_DPLNO = value.split()[4]       # get energy value by splitting line by whitespace and returning 4th value
+        print(E_tot_DPLNO)
+
+
+        return E_tot_DPLNO
+
+
+def getFrequencyCalc(file) :
+
+        f = open(file)                                  # Open file on read mode
+        dataList = f.read().split("\n")                 # Create a list containing all lines
+        f.close()
+        #print(dataList)
+        for index, value in enumerate(dataList):        # fill datalist
+            if 'Zero-point correction' in value:
+                #print(index, value)
+                index = int(index)
+                ZPE = value.split()[2]       # get energy value by splitting line by whitespace and returning 4th value
+            if 'Sum of electronic and thermal Enthalpies=' in value:
+                #print(index, value)
+                index = int(index)
+                enthalpy = value.split()[6]       # get energy value by splitting line by whitespace and returning 4th value
+            if 'Sum of electronic and thermal Free Energies=' in value:
+                #print(index, value)
+                index = int(index)
+                free_energy = value.split()[7]       # get energy value by splitting line by whitespace and returning 4th value
+        print("ZPE:", ZPE)
+        print("H_298:", enthalpy)
+        print("G_298:", free_energy)
+
+
+        return ZPE, enthalpy, free_energy
+
+
+def completeBasisSet(file_TZ, file_QZ) :
+
+        #######some varibales for CBS extrapolation##########
+        alfa = float(-5.46)
+        beta = float(3.05)
+        n = 3
+        m = 4
+
+        f = open(file_TZ)                                  # Open file on read mode
+        dataList_TZ = f.read().split("\n")                 # Create a list containing all lines
+        f.close()
+        for index, value in enumerate(dataList_TZ):        # fill datalist
+            if 'Reference energy' in value:
+                #print(index, value)
+                index = int(index)
+                RefTZ = float(value.split()[3])       # get energy value by splitting line by whitespace and returning 4th value
+            if 'Final correlation energy' in value:
+                #print(index, value)
+                index = int(index)
+                CorrTZ = float(value.split()[4])       # get energy value by splitting line by whitespace and returning 4th value
+        #print("Reference energy TZ:", RefTZ)
+        #print("Final correlation energy TZ", CorrTZ)
+
+        f = open(file_QZ)                                  # Open file on read mode
+        dataList_QZ = f.read().split("\n")                 # Create a list containing all lines
+        f.close()
+        #print(dataList)
+        for index, value in enumerate(dataList_QZ):        # fill datalist
+            if 'Reference energy' in value:
+                #print(index, value)
+                index = int(index)
+                RefQZ = float(value.split()[3])       # get energy value by splitting line by whitespace and returning 4th value
+            if 'Final correlation energy' in value:
+                #print(index, value)
+                index = int(index)
+                CorrQZ = float(value.split()[4])       # get energy value by splitting line by whitespace and returning 4th value
+        #print("Reference energy QZ:", RefQZ)
+        #print("Final correlation energy QZ", CorrQZ)
+
+        ##########################Extrapolating to CBS#####################################
+        corrAlfaN = (math.exp(alfa * math.sqrt(n)))/1
+        corrAlfaM = (math.exp(alfa * math.sqrt(m)))/1
+        RE_extrapolated = ((RefTZ * corrAlfaM) - (RefQZ * corrAlfaN))/(corrAlfaM - corrAlfaN)
+        Corr_extrapolated = (((n ** beta) * CorrTZ) - ((m ** beta) * CorrQZ))/((n ** beta)-(m ** beta))
+        SCF_E_extrapolated = RE_extrapolated + Corr_extrapolated
+
+        return SCF_E_extrapolated
+
+
+
+
+
+
+
+
+
+
+#########################Prepare Folder for Execution of GetData####################
+
+print("Do you want to automatically copy relevant files to cwd for GetData.py ?")
+print("\n")
+print("_gas_opt_freq.log need to be in folder!")
+print("---------------------------------------------------------")
+print("\n")
+file_copy = input('Enter y or n ==>: ')
+directory_in_str = str(os.getcwd())
+directory = os.fsencode(directory_in_str)
+
+current_dir = pathlib.Path.cwd()
+parent_dir =  current_dir.parent
+path_qz = current_dir / 'qz'
+path_tz = current_dir / 'tz'
+path_SMD = current_dir / 'SMD'
+path_to_goodvibes = current_dir / "Goodvibes_output.dat"
+
+if not path_to_goodvibes.is_file():
+    print("No Goodvibes_output.dat file found!")
+    print("Abort script.......................")
+    print("\n")
+    exit()
+
+if file_copy == "y":
+    pathlist = pathlib.Path(current_dir).glob('*_gas_opt_freq.log')
+    for path in pathlist:
+        path = str(path)                    # because path is object not string
+        filename = pathlib.Path(path).stem  # get filename without extension
+        basename =  filename.replace('_gas_opt_freq','')         # get basename
+
+        #########copy gas calulations##########
+        gas = basename + "_gas_opt_freq.log"
+        print(gas)
+        path_to_gas = parent_dir / gas
+        path_to_copy_gas = current_dir / gas
+        if path_to_gas.is_file():
+            shutil.copy(path_to_gas, path_to_copy_gas)
+        else:
+            print(path_to_gas, "not found!!!")
+            continue
+        ##########copy TZ calculation############
+        tz = basename + "_TZ.out"
+        print(tz)
+        path_to_tz = path_tz / tz
+        path_to_copy_tz = current_dir / tz
+        if path_to_tz.is_file():
+            shutil.copy(path_to_tz, path_to_copy_tz)
+        else:
+            print(path_to_tz, "not found!!!")
+            continue
+        ##########copy QZ calculations##########
+        qz = basename + "_QZ.out"
+        print(qz)
+        path_to_qz = path_qz / qz
+        path_to_copy_qz = current_dir / qz
+        if path_to_qz.is_file():
+            shutil.copy(path_to_qz, path_to_copy_qz)
+        else:
+            print(path_to_qz, "not found!!!")
+            continue
+        ###########copy SMD SP#############
+        SMD = basename + "_SP_SMD_freq.log"
+        print(SMD)
+        path_to_SMD = path_SMD / SMD
+        path_to_copy_SMD = current_dir / SMD
+        if path_to_SMD.is_file():
+            shutil.copy(path_to_SMD, path_to_copy_SMD)
+        else:
+            continue
+            print(path_to_SMD, "not found!!!")
+
+#else:
+#    print("Proceed without automatic file copying!"
+#    continue
+
+
+############################Save Methode code as string#############################
+
+#directory_in_str = str(os.getcwd())
+#directory = os.fsencode(directory_in_str)
+
+for file in os.listdir(directory):
+    filename = os.fsdecode(file)
+
+#    if filename.endswith("_SMD_opt.log"):		#-----------------------------------------
+#        method_code = "_SMD_opt"			#
+#        file_end = "_SMD_opt.log"			#
+    if filename.endswith("_gas_opt_freq.log"):	#
+        method_code = "_gas_opt_freq"			#
+        file_end = "_gas_opt_freq.log"			#
+        method_code_freq = "_gas_opt_freq"             # frequency calc ending
+        file_end_freq = "_gas_opt_freq.log"            #
+#    elif filename.endswith("_smd_SP.log"):		#
+#        method_code = "_smd_SP"			#
+#        file_end = "_smd_SP.log"			#
+#    elif filename.endswith("_SP_freq.log"):		#
+#        method_code = "_SP_freq"			#
+#        file_end = "_SP_freq.log"			#
+#    if filename.endswith("_gas_opt_freq.log"):          #
+#        method_code = "_gas_opt_freq_opt"               #
+#        file_end = "_gas_opt_freq.log"                  #-----------------------------------------
+
+
+
+
+    elif filename.endswith("_TZ.out"):			#-----------------------------------------
+        method_code_TZ = "_TZ"				#
+        file_end_TZ = "_TZ.out"				# my common filnames for DPLNO QZ and TZ
+    elif filename.endswith("_QZ.out"):			#
+        method_code_QZ = "_QZ"				#
+        file_end_QZ = "_QZ.out"				#-----------------------------------------
+
+#    elif filename.endswith("_SMD_freq.log"):		#-----------------------------------------
+#        method_code_freq = "_SMD_freq"			# frequency calc ending (no opt)
+#        file_end_freq = "_SMD_freq.log"		#-----------------------------------------
+
+#    elif filename.endswith("_SP_gasph.log"):          #-----------------------------------------
+#        method_code_SP = "_SP_gasph"                  # gasphase SP calc
+#        file_end_SP = "_SP_gasph.log"                 #-----------------------------------------
+    elif filename.endswith("_SP_SMD_freq.log"):          #-----------------------------------------
+        method_code_SP = "_SP_SMD_freq"                  # SMD SP freq calc
+        file_end_SP = "_SP_SMD_freq.log"                 #-----------------------------------------
+
+
+
+
+
+
+    else:
+        print("No specific file extension found in:", filename)
+
+
+##################################Extracting Total Energy from .log########################################
+
+data_opt = pd.DataFrame(columns=["Structure","E_tot_B3LYP_gas"])
+
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if any(filename.endswith(file_end) for file in os.listdir('.')):
+         print("Optimized structures found!")
+         #data_opt = pd.DataFrame(columns=["Structure","E_tot_B3LYP_SMD"])
+         filename = os.fsdecode(file)
+         basename  = str(os.path.splitext(filename)[0])
+         E_tot = getElectronicEnergies(file)
+         print("Out:", E_tot)
+         data_opt = data_opt.append({'Structure': basename, 'E_tot_B3LYP_gas': E_tot}, ignore_index=True)
+         #data_opt = data_opt.append({'E_tot_B3LYP_SMD': E_tot}, ignore_index=True)
+
+data_opt = data_opt.replace(method_code, '',regex=True)
+
+print(data_opt)
+
+
+##################################Extracting TZ Total Energy from .out########################################
+
+data_TZ = pd.DataFrame(columns=["Structure","E_tot_DPLNO(TZ)"])
+
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if any(filename.endswith(file_end_TZ) for file in os.listdir('.')):
+         print("ORCA-DPLNO-TZ Calculation found!!")
+         #data_opt = pd.DataFrame(columns=["Structure","E_tot_B3LYP_SMD"])
+         filename = os.fsdecode(file)
+         basename  = str(os.path.splitext(filename)[0])
+         E_tot_DPLNO_TZ = getSinglePointEnergyFromORCA(file)
+         print("Out:", E_tot_DPLNO_TZ)
+         data_TZ = data_TZ.append({'Structure': basename, 'E_tot_DPLNO(TZ)': E_tot_DPLNO_TZ}, ignore_index=True)
+         #data_opt = data_opt.append({'E_tot_B3LYP_SMD': E_tot}, ignore_index=True)
+
+data_TZ = data_TZ.replace(method_code_TZ, '',regex=True)
+
+print(data_TZ)
+
+
+
+##################################Extracting QZ Total Energy from .out########################################
+
+data_QZ = pd.DataFrame(columns=["Structure","E_tot_DPLNO(QZ)"])
+
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if any(filename.endswith(file_end_QZ) for file in os.listdir('.')):
+         print("ORCA-DPLNO-QZ Calculation found!!")
+         #data_opt = pd.DataFrame(columns=["Structure","E_tot_B3LYP_SMD"])
+         filename = os.fsdecode(file)
+         basename  = str(os.path.splitext(filename)[0])
+         E_tot_DPLNO_QZ = getSinglePointEnergyFromORCA(file)
+         print("Out:", E_tot_DPLNO_QZ)
+         data_QZ = data_QZ.append({'Structure': basename, 'E_tot_DPLNO(QZ)': E_tot_DPLNO_QZ}, ignore_index=True)
+         #data_opt = data_opt.append({'E_tot_B3LYP_SMD': E_tot}, ignore_index=True)
+
+data_QZ = data_QZ.replace(method_code_QZ, '',regex=True)
+
+print(data_QZ)
+
+##################################Extrapolating Complete Basis Set for DPLNO#######################################
+
+data_CBS = pd.DataFrame(columns=["Structure","E_tot_DPLNO(CBS)"])
+
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if any(filename.endswith(file_end_TZ) for file in os.listdir('.')):
+         filename = os.fsdecode(file)
+         basename_TZ  = str(os.path.splitext(filename)[0])
+         basename = basename_TZ.replace("_TZ", "")
+         basename_QZ_out  = basename + "_QZ.out"
+         basename_QZ = basename_QZ_out.replace(".out", "")
+         print("-----------------------next----------------------------")
+         print("CBS extraplolation for", basename_TZ, "and", basename_QZ)
+         SCF_E_extrapolated = completeBasisSet(file, basename_QZ_out)			#where first is TZ (as "file" in for loop) second is corresponding QZ!!!!
+         data_CBS = data_CBS.append({'Structure': basename, 'E_tot_DPLNO(CBS)': SCF_E_extrapolated}, ignore_index=True)
+         print("E_tot_CBS:", SCF_E_extrapolated)
+
+
+#data_CBS = data_CBS.replace(method_code_QZ, '',regex=True)
+
+print(data_CBS)
+
+
+
+
+##################################Extracting Total Energy from SMD_SP_freq.log########################################
+
+data_SP_gas = pd.DataFrame(columns=["Structure","E_tot_SP_SMD_B3LYP"])
+
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if any(filename.endswith(file_end_SP) for file in os.listdir('.')):
+         print("SP SMD Calculation found!!")
+         #data_opt = pd.DataFrame(columns=["Structure","E_tot_B3LYP_SMD"])
+         filename = os.fsdecode(file)
+         basename  = str(os.path.splitext(filename)[0])
+         E_tot_SP = getElectronicEnergies(file)
+         print("Out:", E_tot_SP)
+         data_SP_gas = data_SP_gas.append({'Structure': basename, 'E_tot_SP_SMD_B3LYP': E_tot_SP}, ignore_index=True)
+         #data_opt = data_opt.append({'E_tot_B3LYP_SMD': E_tot}, ignore_index=True)
+
+data_SP_gas = data_SP_gas.replace(method_code_SP, '',regex=True)
+
+print(data_SP_gas)
+
+
+##################################Extracting Thermochemistry from .log########################################
+
+data_freq = pd.DataFrame(columns=["Structure","ZPE", "H_298_gas_B3LYP", "G_298_gas_B3LYP"])
+
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if any(filename.endswith(file_end_freq) for file in os.listdir('.')):
+         print("Frequency Calculation found!!")
+         filename = os.fsdecode(file)
+         basename  = str(os.path.splitext(filename)[0])
+         ZPE, enthalpy, free_energy = getFrequencyCalc(file)
+         print("Out:", ZPE)
+         print("Out:", enthalpy)
+         print("Out:", free_energy)
+         data_freq = data_freq.append({'Structure': basename, 'ZPE': ZPE, 'H_298_gas_B3LYP': enthalpy, 'G_298_gas_B3LYP': free_energy}, ignore_index=True)
+         #data_opt = data_opt.append({'E_tot_B3LYP_SMD': E_tot}, ignore_index=True)
+
+data_freq = data_freq.replace(method_code_freq, '',regex=True)
+
+print(data_freq)
+
+
+###############################################Merge all Dataframes together###################################
+
+data = pd.merge(data_SP_gas, data_opt, on="Structure")
+data = pd.merge(data, data_freq, on="Structure")
+data = pd.merge(data, data_TZ, on="Structure")
+data = pd.merge(data, data_QZ, on="Structure")
+data = pd.merge(data, data_CBS, on="Structure")
+
+##############################################Add qh(Thrular)-G from output dat######################
+
+data_goodvibes = pd.read_csv("Goodvibes_output.dat",skiprows=11 , delim_whitespace=True, names=["None", "Structure", "E", "ZPE", "H", "S", "T.qh-S", "G", "qh-G"],)
+
+
+# delim_whitespace=True creates new column on any instance of blank space (tab or space) and is more flexible than sep="\t"
+# skips the first 11 rows --> header of .dat file
+
+data_goodvibes[["None", "Structure"]] = data_goodvibes[["None", "Structure"]].astype(str)             #define columns as string
+data_goodvibes[["E", "ZPE", "H", "S", "T.qh-S", "G", "qh-G"]] = data_goodvibes[["E", "ZPE", "H", "S", "T.qh-S", "G", "qh-G"]].astype(float)   #define columns as float
+
+data_goodvibes = data_goodvibes[["Structure", "qh-G", "ZPE", "H", "S", "T.qh-S", "G", "E"]]    # cut of first column " o o o o "
+data_goodvibes = data_goodvibes[["Structure", "qh-G"]]
+data_goodvibes = data_goodvibes.replace("_gv", '',regex=True)
+print(data_goodvibes)
+
+
+data = pd.merge(data, data_goodvibes, on="Structure")
+data = data.round(decimals=7)
+data = data.sort_values(by=["qh-G"])
+
+########################################Get DeltaXYZ################################
+
+
+all_xyz = pd.DataFrame(columns=['Structure', 'Center Number', 'Element','X','Y','Z'])
+for file in os.listdir(directory):
+     filename = os.fsdecode(file)
+     if filename.endswith(file_end):
+         basename  = str(os.path.splitext(filename)[0])
+         #basename_xyz_df = basename + "_xyz_df"
+         #newfile = str(filename) + ".xyz"          # Gives the name to a possible new file
+         #f = open(file)                              # Open file on read mode
+         #dataList = f.read().split("\n")             # Create a list containing all lines
+         #f.close()
+         atom = getCoordinates(file)
+         atom['Structure'] = basename
+         atom = atom[['Structure', 'Center Number', 'Element','X','Y','Z']]
+         all_xyz = all_xyz.append(atom)
+         continue
+     else:
+         print("Out:",filename)
+         continue
+
+all_xyz = all_xyz.replace(method_code, '',regex=True)
+
+
+print(all_xyz)
+
+print("---------------------------------------------------------------")
+
+
+all_centroids = pd.DataFrame(columns=['Structure', 'Center Number', 'Element','X','Y','Z'])
+
+for i in range(0, data.shape[0]):
+    value = data.iloc[i]['Structure']                               # value structure name in data_opt
+    #print(value)
+    for Structure, single_xyz in all_xyz.groupby('Structure'):          # Structure: structure name in all_xyz
+        #print(Structure)
+        if Structure == value:
+            print(single_xyz)
+            print("------------------------------ Geometric Centroid----------------------------------------------")
+            sum_X = float(single_xyz['X'].sum())                        # Sum over whole "X" columns as float
+            sum_Y = float(single_xyz['Y'].sum())
+            sum_Z = float(single_xyz['Z'].sum())
+            num_of_atoms = len(single_xyz.index)                        # Atom count as lenght of dataframe "single_xyz"
+            centroid = pd.DataFrame()
+            centroid['X'] = abs((sum_X / num_of_atoms) - single_xyz['X'])       # Calculating geometric centroid
+            centroid['Y'] = abs((sum_Y / num_of_atoms) - single_xyz['Y'])
+            centroid['Z'] = abs((sum_Z / num_of_atoms) - single_xyz['Z'])
+            centroid['Structure'] = single_xyz['Structure']                     # Add "Structure" column to new dataframe "centroid"
+            centroid['Center Number'] = single_xyz['Center Number']
+            centroid['Element'] = single_xyz['Element']
+            centroid = centroid[['Structure', 'Center Number', 'Element','X','Y','Z']]
+            print(centroid)
+            print("--------------------------------next Structure-------------------------------------------------")
+            all_centroids = all_centroids.append(centroid)              #create dataframe with all centroid information by appending "centroid" to each other
+        else:
+            continue
+print("------------------------------------------------------------------------------------------------")
+print("------------------------------------------EOF---------------------------------------------------")
+print("------------------------------------------------------------------------------------------------")
+print(all_centroids)
+
+############################The following block iterates trough the sorted data_opt list and also extracts the following structure
+
+list_to_exclude = []            # list of structures to exlude from data_opt
+
+data_opt_DeltaXYZ = pd.DataFrame(columns=["Structure","E_tot_B3LYP_gas", "DeltaXYZ"])
+
+for i in range(0, (data.shape[0] - 1)):                             # iterating over data_opt
+    #print(data_opt)
+    value = data.iloc[i]['Structure']                               # value structure name in data_opt
+    #print(value)
+    for Structure, single_centroid_1 in all_centroids.groupby('Structure'):          # Structure: structure name in all_centroids
+        #print(Structure)
+        if Structure == value:                                          # just extracting centroid information with same name, stored as single_centroid variable
+            #print(single_centroid_1)
+            break
+    value2 = data.iloc[(i + 1)]['Structure']                        # get next centroid
+    print("Structure:", value, "was compared to:", value2)
+    for Structure, single_centroid_2 in all_centroids.groupby('Structure'):          # Structure: structure name in all_centroids
+        #print(Structure)
+        if Structure == value2:
+            #print(single_centroid_2)
+            break
+    diff_eval = pd.DataFrame()
+    diff_eval['X'] = abs(single_centroid_1['X'] - single_centroid_2['X'])       # absolute difference of X coordinate between two consecutive structures
+    diff_eval['Y'] = abs(single_centroid_1['Y'] - single_centroid_2['Y'])
+    diff_eval['Z'] = abs(single_centroid_1['Z'] - single_centroid_2['Z'])
+    diff_eval['Structure'] = single_centroid_1['Structure']
+    diff_eval = diff_eval[['Structure','X','Y','Z']]
+    sum_diff_eval_X = float(diff_eval['X'].sum())                               # sum of all differences in X axis
+    sum_diff_eval_Y = float(diff_eval['Y'].sum())
+    sum_diff_eval_Z = float(diff_eval['Z'].sum())
+    print("Delta_X:", sum_diff_eval_X, "Delta_Y:", sum_diff_eval_Y, "Delta_Z:", sum_diff_eval_Z)
+
+    ##############Delta_XYZ######################
+    Delta_XYZ = sum_diff_eval_X + sum_diff_eval_Y + sum_diff_eval_Z
+    print("The sum of all differences is:", Delta_XYZ)
+    energy = data.iloc[(i + 1)]['E_tot_B3LYP_gas']
+    #print(value2, energy)
+    single_Delta_XYZ = pd.DataFrame(columns=["Structure","E_tot_B3LYP_gas", "DeltaXYZ"])
+    single_Delta_XYZ = single_Delta_XYZ.append({'Structure': value2, 'E_tot_B3LYP_gas': energy, 'DeltaXYZ': Delta_XYZ}, ignore_index=True)
+    data_opt_DeltaXYZ = data_opt_DeltaXYZ.append(single_Delta_XYZ, ignore_index=True)
+
+
+
+    if sum_diff_eval_X < 0.1 and sum_diff_eval_Y < 0.1 and sum_diff_eval_Z < 0.1:               # Setting criteria of 0.1 Angstroem to define as "Different Structure"
+       print("******SAME Structure******")
+       value2 = str(value2)
+       list_to_exclude += [value2]
+    else:
+       print("******Different Structure******")
+print(data_opt_DeltaXYZ)
+print("---------------------------------------------------------------------------")
+data['Structure'] = data['Structure'].astype('str')
+#print(data_opt.info())          # convert  X Y Z to float for later math. operations
+#data_opt_geom_filt = pd.DataFrame(columns=['Structure', 'E_tot_B3LYP_SMD'])
+#data_opt_geom_filt  = data_opt[~data_opt['Structure'].isin(list_to_exclude)]
+#print(data_opt_geom_filt)
+
+data_opt_DeltaXYZ =  data_opt_DeltaXYZ[["Structure","DeltaXYZ"]]
+data = pd.merge(data, data_opt_DeltaXYZ, how='left', on="Structure")
+data = data[["Structure","DeltaXYZ","E_tot_B3LYP_gas","E_tot_SP_SMD_B3LYP","ZPE","H_298_gas_B3LYP","G_298_gas_B3LYP","E_tot_DPLNO(TZ)","E_tot_DPLNO(QZ)","qh-G",'E_tot_DPLNO(CBS)']]
+data = data.sort_values(by=["qh-G"])
+
+
+########################################################################################################################################################################
+
+
+print("\n")
+print("Result of all calculations merged and sorted by qh-G:")
+print("\n")
+print(data)
+
+#print(data.info())
+
+print("------------------------Code run smoothly!!------------------------")
+
+
+data.to_csv(r'./getData.txt', sep='\t', header='true', index=False, index_label=False, na_rep='NULL')
