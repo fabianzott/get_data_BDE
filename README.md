@@ -1,7 +1,7 @@
 # get_data_BDE
 Get data from ORCA and Gaussian output file for SMD(H2O)/DLPNO-CCSD(T)/CBS//(U)B3LYP-D3/6-31+G(d,p) level of theory
 
-data extraction tool used in for https://doi.org/10.1002/cbic.202100420
+data extraction tool used in https://doi.org/10.1002/cbic.202100420
 
 - can be used after modification for the extraction of data from Gaussian .log and ORCA .out output files
 - DLPNO-CCSD(T)/CBS extrapolation included
